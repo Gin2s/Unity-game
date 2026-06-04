@@ -1,7 +1,7 @@
 using System.Collections.Generic;
 using UnityEngine;
 
-public enum RoomType { Start, Basement, Normal, Boss }
+public enum RoomType { Start, Basement, Normal, Stairs, Boss }
 public enum RoomEventType { None, PowerGain }
 
 [RequireComponent(typeof(SpriteRenderer))]
@@ -10,6 +10,7 @@ public class DungeonRoom : MonoBehaviour
 {
     public int roomId;
     public Vector2Int gridPosition;
+    public int layer = 1;
     public RoomType roomType = RoomType.Normal;
     public RoomEventType roomEventType = RoomEventType.None;
     public int eventPowerAmount = 3;
@@ -25,6 +26,7 @@ public class DungeonRoom : MonoBehaviour
     private static readonly Color startColor = new Color(0.4f, 0.9f, 0.4f);
     private static readonly Color basementColor = new Color(0.3f, 0.6f, 1f);
     private static readonly Color normalColor = new Color(0.9f, 0.9f, 0.9f);
+    private static readonly Color stairsColor = new Color(0.7f, 0.5f, 0.1f);
     private static readonly Color availableColor = new Color(1f, 0.85f, 0.4f);
     private static readonly Color visitedColor = new Color(0.5f, 0.5f, 0.5f);
     private static readonly Color bossColor = new Color(0.9f, 0.3f, 0.3f);
@@ -75,6 +77,10 @@ public class DungeonRoom : MonoBehaviour
         if (roomType == RoomType.Boss)
         {
             spriteRenderer.color = bossColor;
+        }
+        else if (roomType == RoomType.Stairs)
+        {
+            spriteRenderer.color = stairsColor;
         }
         else if (roomType == RoomType.Basement)
         {

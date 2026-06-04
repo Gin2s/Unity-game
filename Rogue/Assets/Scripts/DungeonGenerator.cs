@@ -9,6 +9,8 @@ public class DungeonGenerator : MonoBehaviour
     public int roomCount = 18;
     public Vector2Int gridSize = new Vector2Int(7, 7);
     public Vector2Int startPosition = new Vector2Int(0, 0);
+    public int floorCount = 3;
+    public float floorSpacing = 8f;
     public float roomSpacing = 2.5f;
     public GameObject roomPrefab;
     public bool generateOnStart = true;
@@ -27,10 +29,12 @@ public class DungeonGenerator : MonoBehaviour
     public float eventSpawnChance = 0.2f;
 
     public DungeonRoom currentRoom { get; private set; }
+    public int currentFloor { get; private set; }
+    private bool isFirstMoveOnFloor = false;
     public List<DungeonRoom> allRooms { get; private set; } = new List<DungeonRoom>();
     private List<RoomEventData> eventPool = new List<RoomEventData>();
 
-    private Dictionary<Vector2Int, DungeonRoom> roomsByPosition = new Dictionary<Vector2Int, DungeonRoom>();
+    private Dictionary<Vector3Int, DungeonRoom> roomsByPosition = new Dictionary<Vector3Int, DungeonRoom>();
 
     private class RoomEventData
     {
@@ -69,6 +73,7 @@ public class DungeonGenerator : MonoBehaviour
             return;
         }
 
+        HideRoomPrefabTemplate();
         EnsurePowerUI();
         ClearDungeon();
         CreateRoomPositions();
@@ -90,8 +95,18 @@ public class DungeonGenerator : MonoBehaviour
         {
             for (int i = roomParent.childCount - 1; i >= 0; i--)
             {
-                DestroyImmediate(roomParent.GetChild(i).gameObject);
+                Transform child = roomParent.GetChild(i);
+                if (roomPrefab != null && child == roomPrefab.transform) continue;
+                DestroyImmediate(child.gameObject);
             }
+        }
+    }
+
+    private void HideRoomPrefabTemplate()
+    {
+        if (roomPrefab != null && roomPrefab.scene.IsValid())
+        {
+            roomPrefab.SetActive(false);
         }
     }
 
@@ -111,7 +126,9 @@ public class DungeonGenerator : MonoBehaviour
     {
         if (powerText != null)
         {
-            powerText.text = currentPower > 0 ? $"Power: {currentPower}/{maxPower}" : "Game Over";
+            powerText.text = currentPower > 0
+                ? $"Power: {currentPower}/{maxPower}  Floor: {currentFloor}/{floorCount}"
+                : "Game Over";
         }
     }
 
@@ -128,7 +145,7 @@ public class DungeonGenerator : MonoBehaviour
 
     private void AssignEventToRoom(DungeonRoom room, bool guarantee)
     {
-        if (room == null || room.roomEventType != RoomEventType.None || eventPool.Count == 0) return;
+        if (room == null || room.roomEventType != RoomEventType.None || room.roomType != RoomType.Normal || eventPool.Count == 0) return;
 
         bool assign = guarantee || Random.value < eventSpawnChance;
         if (!assign) return;
@@ -184,37 +201,40 @@ public class DungeonGenerator : MonoBehaviour
 
     private void CreateRoomPositions()
     {
-        var positions = new HashSet<Vector2Int> { startPosition };
-        var frontier = new List<Vector2Int> { startPosition };
-        int maxRooms = Mathf.Min(roomCount, gridSize.x * gridSize.y);
-
-        while (positions.Count < maxRooms && frontier.Count > 0)
+        for (int layer = 1; layer <= floorCount; layer++)
         {
-            Vector2Int current = frontier[Random.Range(0, frontier.Count)];
-            Vector2Int[] shuffled = directions.OrderBy(_ => Random.value).ToArray();
+            var positions = new HashSet<Vector2Int> { startPosition };
+            var frontier = new List<Vector2Int> { startPosition };
+            int maxRooms = Mathf.Min(roomCount, gridSize.x * gridSize.y);
 
-            bool added = false;
-            foreach (Vector2Int dir in shuffled)
+            while (positions.Count < maxRooms && frontier.Count > 0)
             {
-                Vector2Int next = current + dir;
-                if (IsInsideGrid(next) && !positions.Contains(next))
+                Vector2Int current = frontier[Random.Range(0, frontier.Count)];
+                Vector2Int[] shuffled = directions.OrderBy(_ => Random.value).ToArray();
+
+                bool added = false;
+                foreach (Vector2Int dir in shuffled)
                 {
-                    positions.Add(next);
-                    frontier.Add(next);
-                    added = true;
-                    break;
+                    Vector2Int next = current + dir;
+                    if (IsInsideGrid(next) && !positions.Contains(next))
+                    {
+                        positions.Add(next);
+                        frontier.Add(next);
+                        added = true;
+                        break;
+                    }
+                }
+
+                if (!added)
+                {
+                    frontier.Remove(current);
                 }
             }
 
-            if (!added)
+            foreach (Vector2Int position in positions)
             {
-                frontier.Remove(current);
+                roomsByPosition[new Vector3Int(position.x, position.y, layer)] = null;
             }
-        }
-
-        foreach (Vector2Int position in positions)
-        {
-            roomsByPosition[position] = null;
         }
     }
 
@@ -229,11 +249,14 @@ public class DungeonGenerator : MonoBehaviour
     private void InstantiateRooms()
     {
         int id = 0;
-        List<Vector2Int> roomPositions = new List<Vector2Int>(roomsByPosition.Keys);
+        List<Vector3Int> roomPositions = new List<Vector3Int>(roomsByPosition.Keys);
 
-        foreach (Vector2Int position in roomPositions)
+        foreach (Vector3Int position in roomPositions)
         {
-            Vector3 worldPosition = new Vector3(position.x * roomSpacing, position.y * roomSpacing, 0f);
+            Vector3 worldPosition = new Vector3(
+                position.x * roomSpacing,
+                position.y * roomSpacing + (position.z - 1) * floorSpacing,
+                0f);
             GameObject roomInstance = Instantiate(roomPrefab, worldPosition, Quaternion.identity, roomParent);
             roomInstance.name = $"Room_{id}";
             DungeonRoom room = roomInstance.GetComponent<DungeonRoom>();
@@ -243,7 +266,8 @@ public class DungeonGenerator : MonoBehaviour
             }
 
             room.roomId = id;
-            room.gridPosition = position;
+            room.gridPosition = new Vector2Int(position.x, position.y);
+            room.layer = position.z;
             room.roomType = RoomType.Normal;
             room.isVisited = false;
             room.isAvailable = false;
@@ -256,12 +280,12 @@ public class DungeonGenerator : MonoBehaviour
 
     private void BuildNeighbors()
     {
-        foreach (KeyValuePair<Vector2Int, DungeonRoom> pair in roomsByPosition)
+        foreach (KeyValuePair<Vector3Int, DungeonRoom> pair in roomsByPosition)
         {
             DungeonRoom room = pair.Value;
             foreach (Vector2Int direction in directions)
             {
-                Vector2Int neighborPosition = pair.Key + direction;
+                Vector3Int neighborPosition = new Vector3Int(pair.Key.x + direction.x, pair.Key.y + direction.y, pair.Key.z);
                 if (roomsByPosition.TryGetValue(neighborPosition, out DungeonRoom neighbor) && neighbor != null)
                 {
                     if (!room.neighbors.Contains(neighbor))
@@ -277,33 +301,42 @@ public class DungeonGenerator : MonoBehaviour
 
     private void MarkBossRoom()
     {
-        DungeonRoom bestBoss = null;
-        int bestDistance = -1;
-        foreach (DungeonRoom room in allRooms)
+        for (int layer = 1; layer <= floorCount; layer++)
         {
-            int distance = Mathf.Abs(room.gridPosition.x - startPosition.x) + Mathf.Abs(room.gridPosition.y - startPosition.y);
-            if (distance > bestDistance)
+            DungeonRoom bestRoom = null;
+            int bestDistance = -1;
+            foreach (DungeonRoom room in allRooms)
             {
-                bestDistance = distance;
-                bestBoss = room;
-            }
-        }
+                if (room.layer != layer) continue;
 
-        if (bestBoss != null && bestBoss.gridPosition != startPosition)
-        {
-            bestBoss.roomType = RoomType.Boss;
+                int distance = Mathf.Abs(room.gridPosition.x - startPosition.x) + Mathf.Abs(room.gridPosition.y - startPosition.y);
+                if (distance > bestDistance)
+                {
+                    bestDistance = distance;
+                    bestRoom = room;
+                }
+            }
+
+            if (bestRoom == null) continue;
+            if (layer < floorCount)
+            {
+                bestRoom.roomType = RoomType.Stairs;
+            }
+            else if (bestRoom.gridPosition != startPosition)
+            {
+                bestRoom.roomType = RoomType.Boss;
+            }
         }
     }
 
     private void SelectStartRoom()
     {
-        if (!roomsByPosition.TryGetValue(startPosition, out DungeonRoom startRoom) || startRoom == null)
+        currentFloor = 1;
+        isFirstMoveOnFloor = true;
+        currentRoom = GetStartRoom(currentFloor);
+        if (currentRoom == null)
         {
             currentRoom = allRooms.Count > 0 ? allRooms[0] : null;
-        }
-        else
-        {
-            currentRoom = startRoom;
         }
 
         if (currentRoom != null)
@@ -314,6 +347,11 @@ public class DungeonGenerator : MonoBehaviour
             currentRoom.isAvailable = false;
             UpdateCameraToCurrentRoom();
         }
+    }
+
+    private DungeonRoom GetStartRoom(int floor)
+    {
+        return allRooms.Find(room => room.layer == floor && room.gridPosition == startPosition);
     }
 
     private void UpdateCameraToCurrentRoom()
@@ -340,6 +378,17 @@ public class DungeonGenerator : MonoBehaviour
     {
         foreach (DungeonRoom room in allRooms)
         {
+            bool sameFloor = currentRoom != null && room.layer == currentFloor;
+            if (!sameFloor)
+            {
+                room.isAvailable = false;
+                room.isRevealed = false;
+                room.RefreshView(false);
+                room.gameObject.SetActive(false);
+                continue;
+            }
+
+            room.gameObject.SetActive(true);
             room.isAvailable = currentRoom != null && currentRoom.neighbors.Contains(room) && currentPower > 0;
             room.isRevealed = room.isRevealed || room.isVisited || room.isAvailable || room == currentRoom;
             room.RefreshView(room == currentRoom);
@@ -368,14 +417,9 @@ public class DungeonGenerator : MonoBehaviour
         currentRoom.isAvailable = false;
         currentRoom.RefreshView(true);
 
-        if (cameFromBasement)
-        {
-            AssignEventToRoom(currentRoom, true);
-        }
-        else
-        {
-            AssignEventToRoom(currentRoom, false);
-        }
+        bool guaranteeEvent = cameFromBasement || isFirstMoveOnFloor;
+        AssignEventToRoom(currentRoom, guaranteeEvent);
+        isFirstMoveOnFloor = false;
 
         currentPower = Mathf.Max(0, currentPower - 1);
         UpdatePowerDisplay();
@@ -402,8 +446,24 @@ public class DungeonGenerator : MonoBehaviour
             currentRoom.eventCompleted = true;
             yield return eventManager.PlayPowerGainEvent(currentRoom.eventPowerAmount, () =>
             {
-                currentPower = Mathf.Min(maxPower, currentPower + currentRoom.eventPowerAmount);
+                currentPower += currentRoom.eventPowerAmount;
                 UpdatePowerDisplay();
+            });
+            eventInProgress = false;
+            UpdateCameraToCurrentRoom();
+            RevealAvailableRooms();
+        }
+
+        if (currentRoom.roomType == RoomType.Stairs && eventManager != null)
+        {
+            eventInProgress = true;
+            int nextFloor = Mathf.Min(currentRoom.layer + 1, floorCount);
+            yield return eventManager.PlayFloorTransitionEvent(currentRoom.layer, nextFloor, () =>
+            {
+                EnterNextFloor(nextFloor);
+            }, () =>
+            {
+                Debug.Log("階段を使わず現在の層に留まることにした。");
             });
             eventInProgress = false;
             UpdateCameraToCurrentRoom();
@@ -416,7 +476,45 @@ public class DungeonGenerator : MonoBehaviour
         }
         else
         {
-            Debug.Log($"Moved to room {currentRoom.roomId} at {currentRoom.gridPosition}");
+            Debug.Log($"Moved to room {currentRoom.roomId} at {currentRoom.gridPosition} on floor {currentRoom.layer}");
         }
+    }
+
+    private void EnterNextFloor(int floor)
+    {
+        DungeonRoom nextFloorRoom = GetStartRoom(floor);
+        if (nextFloorRoom == null)
+        {
+            Debug.LogWarning($"Next floor {floor} start room not found.");
+            return;
+        }
+
+        int previousFloor = currentFloor;
+        currentFloor = floor;
+        isFirstMoveOnFloor = true;
+        currentRoom = nextFloorRoom;
+        currentRoom.roomType = RoomType.Basement;
+
+        currentPower = maxPower;
+        UpdatePowerDisplay();
+
+        foreach (DungeonRoom room in allRooms)
+        {
+            if (room.layer != currentFloor)
+            {
+                room.isRevealed = false;
+                room.isAvailable = false;
+                room.gameObject.SetActive(false);
+            }
+            else
+            {
+                room.gameObject.SetActive(true);
+            }
+        }
+
+        currentRoom.isVisited = true;
+        currentRoom.isAvailable = false;
+        currentRoom.RefreshView(true);
+        Debug.Log($"Moved to floor {floor} start room {currentRoom.roomId} from floor {previousFloor}.");
     }
 }
